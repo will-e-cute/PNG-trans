@@ -1,7 +1,3 @@
-Voici un **README.md propre et prêt à l’emploi** pour ton projet 👇
-
-***
-
 # 📷 Image Viewer Pro
 
 Un visualiseur d’images en Python avec :
@@ -130,10 +126,3 @@ Integrator Performance Technician
 ## 📜 Licence
 
 Usage libre pour projet personnel ou interne.
-
-***
-
-Si tu veux, je peux te faire :
-👉 un **mode ultra fluide (GPU-like)**  
-👉 une version avec **multi-images / overlay**  
-👉 ou une version type **outil de calibration industriel**
