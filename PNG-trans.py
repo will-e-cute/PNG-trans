@@ -1,158 +1,203 @@
-import tkinter as tk
-from tkinter import filedialog, ttk, messagebox
-from PIL import Image, ImageTk
+import sys
+import json
+import os
+from PySide6.QtWidgets import (
+    QApplication, QMainWindow, QFileDialog, QGraphicsView, 
+    QGraphicsScene, QGraphicsPixmapItem, QMenu, QToolBar, 
+    QSlider, QLabel, QVBoxLayout, QHBoxLayout, QWidget, QFrame
+)
+from PySide6.QtCore import Qt, QPointF, QRectF, QSize
+from PySide6.QtGui import QPixmap, QAction, QColor, QPainter
 
+RECENT_FILES_FILE = "recent_files.json"
 
-class ZoomableImageViewer:
-    def __init__(self, master):
-        self.master = master
-        master.title("Image Viewer Pro")
-        master.geometry("900x650")
-        master.attributes("-alpha", 0.95)
+class ImageOverlay(QGraphicsView):
+    def __init__(self):
+        super().__init__()
+        self.setScene(QGraphicsScene())
+        self.pixmap_item = QGraphicsPixmapItem()
+        self.scene().addItem(self.pixmap_item)
 
-        self.image = None
-        self.tk_image = None
+        # Performance optimizations
+        self.setRenderHint(self.renderHints() | QPainter.Antialiasing | QPainter.SmoothPixmapTransform)
+        self.setDragMode(QGraphicsView.ScrollHandDrag)
+        self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
+        self.setResizeAnchor(QGraphicsView.AnchorUnderMouse)
+        self.setViewportUpdateMode(QGraphicsView.FullViewportUpdate)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setFrameShape(QFrame.NoFrame)
 
-        self.zoom = 1.0
-        self.img_alpha = 1.0
+    def set_image(self, path):
+        pixmap = QPixmap(path)
+        if not pixmap.isNull():
+            self.pixmap_item.setPixmap(pixmap)
+            self.setSceneRect(QRectF(0, 0, pixmap.width(), pixmap.height()))
+            self.reset_zoom()
 
-        self.offset_x = 0
-        self.offset_y = 0
+    def reset_zoom(self):
+        self.resetTransform()
+        self.fitInView(self.sceneRect(), Qt.KeepAspectRatio)
 
-        self.drag_start_x = 0
-        self.drag_start_y = 0
+    def zoom_in(self):
+        self.scale(1.1, 1.1)
 
-        # --- Layout ---
-        master.columnconfigure(0, weight=1)
-        master.rowconfigure(0, weight=1)
+    def zoom_out(self):
+        self.scale(0.9, 0.9)
 
-        # Canvas (IMPORTANT pour pan)
-        self.canvas = tk.Canvas(master, bg="black", highlightthickness=0)
-        self.canvas.grid(row=0, column=0, sticky="nsew")
+    def set_zoom_level(self, level):
+        # Reset and then apply scale relative to fitInView if needed, 
+        # but simpler to just scale from a baseline.
+        # For a slider, we'll need a more controlled approach.
+        pass
 
-        # --- Controls ---
-        control = tk.Frame(master)
-        control.grid(row=1, column=0, sticky="ew")
+    def wheelEvent(self, event):
+        if event.angleDelta().y() > 0:
+            self.zoom_in()
+        else:
+            self.zoom_out()
+        super().wheelEvent(event)
 
-        ttk.Button(control, text="Open", command=self.open_image).pack(side=tk.LEFT, padx=5)
+class MainWindow(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Transparent Viewer Pro")
+        self.resize(900, 650)
 
-        ttk.Label(control, text="Zoom").pack(side=tk.LEFT)
-        self.zoom_var = tk.DoubleVar(value=1.0)
-        ttk.Scale(control, from_=0.2, to=5.0, variable=self.zoom_var,
-                  command=self.on_zoom_slider).pack(side=tk.LEFT, fill="x", expand=True)
+        # Overlay Settings
+        self.setWindowFlags(Qt.WindowStaysOnTopHint)
+        self.setWindowOpacity(0.5)
 
-        ttk.Label(control, text="Alpha").pack(side=tk.LEFT)
-        self.alpha_var = tk.DoubleVar(value=1.0)
-        ttk.Scale(control, from_=0.1, to=1.0, variable=self.alpha_var,
-                  command=self.on_alpha_slider).pack(side=tk.LEFT, fill="x", expand=True)
+        # UI Components
+        self.central_widget = QWidget()
+        self.setCentralWidget(self.central_widget)
+        self.layout = QVBoxLayout(self.central_widget)
+        self.layout.setContentsMargins(0, 0, 0, 0)
+        self.layout.setSpacing(0)
 
-        # --- Events ---
-        self.canvas.bind("<MouseWheel>", self.zoom_mouse)     # Windows
-        self.canvas.bind("<Button-4>", self.zoom_in)          # Linux
-        self.canvas.bind("<Button-5>", self.zoom_out)
+        self.viewer = ImageOverlay()
+        self.layout.addWidget(self.viewer)
 
-        self.canvas.bind("<ButtonPress-1>", self.start_drag)
-        self.canvas.bind("<B1-Motion>", self.drag)
+        # Controls Panel
+        self.controls = QHBoxLayout()
+        self.controls_widget = QWidget()
+        self.controls_widget.setLayout(self.controls)
+        self.controls_widget.setFixedHeight(50)
+        self.layout.addWidget(self.controls_widget)
 
-    # ---------- IMAGE ----------
-    def open_image(self):
-        path = filedialog.askopenfilename(
-            filetypes=[("Images", "*.png *.jpg *.jpeg *.bmp"), ("All files", "*.*")]
+        # Alpha Slider
+        self.controls.addWidget(QLabel("Window Alpha:"))
+        self.win_alpha_slider = QSlider(Qt.Horizontal)
+        self.win_alpha_slider.setRange(10, 100)
+        self.win_alpha_slider.setValue(50)
+        self.win_alpha_slider.setFixedWidth(150)
+        self.win_alpha_slider.valueChanged.connect(self.update_window_opacity)
+        self.controls.addWidget(self.win_alpha_slider)
+
+        self.controls.addWidget(QLabel(" Image Alpha:"))
+        self.img_alpha_slider = QSlider(Qt.Horizontal)
+        self.img_alpha_slider.setRange(10, 100)
+        self.img_alpha_slider.setValue(100)
+        self.img_alpha_slider.setFixedWidth(150)
+        self.img_alpha_slider.valueChanged.connect(self.update_image_opacity)
+        self.controls.addWidget(self.img_alpha_slider)
+
+        # Zoom Slider
+        self.controls.addWidget(QLabel(" Zoom:"))
+        self.zoom_slider = QSlider(Qt.Horizontal)
+        self.zoom_slider.setRange(20, 500) # 0.2x to 5.0x
+        self.zoom_slider.setValue(100)
+        self.zoom_slider.setFixedWidth(150)
+        self.zoom_slider.valueChanged.connect(self.update_zoom)
+        self.controls.addWidget(self.zoom_slider)
+
+        self.recent_files = self.load_recent_files()
+        self.create_menus()
+
+    def create_menus(self):
+        menubar = self.menuBar()
+        file_menu = menubar.addMenu("&File")
+
+        open_action = QAction("&Open...", self)
+        open_action.setShortcut("Ctrl+O")
+        open_action.triggered.connect(self.open_file)
+        file_menu.addAction(open_action)
+
+        close_action = QAction("&Close", self)
+        close_action.triggered.connect(self.close_file)
+        file_menu.addAction(close_action)
+
+        self.recent_menu = QMenu("Recent Files", self)
+        file_menu.addMenu(self.recent_menu)
+        self.update_recent_menu()
+
+        file_menu.addSeparator()
+        quit_action = QAction("&Quit", self)
+        quit_action.setShortcut("Ctrl+Q")
+        quit_action.triggered.connect(self.close)
+        file_menu.addAction(quit_action)
+
+    def update_window_opacity(self, value):
+        self.setWindowOpacity(value / 100.0)
+
+    def update_image_opacity(self, value):
+        self.viewer.pixmap_item.setOpacity(value / 100.0)
+
+    def update_zoom(self, value):
+        scale = value / 100.0
+        # To make the slider consistent, we reset the transform and apply scale
+        self.viewer.resetTransform()
+        self.viewer.scale(scale, scale)
+        # We still want to fit in view initially or keep centered
+        self.viewer.centerOn(self.viewer.pixmap_item.sceneBoundingRect().center())
+
+    def open_file(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Open Image", "", "Images (*.png *.jpg *.jpeg *.bmp);;All files (*.*)"
         )
-        if not path:
-            return
+        if path:
+            self.viewer.set_image(path)
+            self.add_to_recent(path)
+            self.update_recent_menu()
+
+    def close_file(self):
+        self.viewer.pixmap_item.setPixmap(QPixmap())
+
+    def load_recent_files(self):
+        if os.path.exists(RECENT_FILES_FILE):
+            try:
+                with open(RECENT_FILES_FILE, "r") as f:
+                    return json.load(f)
+            except:
+                return []
+        return []
+
+    def add_to_recent(self, path):
+        if path in self.recent_files:
+            self.recent_files.remove(path)
+        self.recent_files.insert(0, path)
+        self.recent_files = self.recent_files[:10] # Keep last 10
         try:
-            self.image = Image.open(path).convert("RGBA")
-            self.zoom = 1.0
-            self.offset_x = 0
-            self.offset_y = 0
-            self.update_image()
+            with open(RECENT_FILES_FILE, "w") as f:
+                json.dump(self.recent_files, f)
         except Exception as e:
-            messagebox.showerror("Error", str(e))
+            print(f"Error saving recent files: {e}")
 
-    # ---------- UPDATE ----------
-    def update_image(self):
-        if self.image is None:
-            return
+    def update_recent_menu(self):
+        self.recent_menu.clear()
+        for path in self.recent_files:
+            action = QAction(os.path.basename(path), self)
+            action.triggered.connect(lambda checked, p=path: self.open_recent(p))
+            self.recent_menu.addAction(action)
 
-        img = self.image.copy()
+    def open_recent(self, path):
+        if os.path.exists(path):
+            self.viewer.set_image(path)
+        else:
+            print(f"File no longer exists: {path}")
 
-        # appliquer alpha image
-        if self.img_alpha < 1.0:
-            alpha = img.split()[3]
-            alpha = alpha.point(lambda p: int(p * self.img_alpha))
-            img.putalpha(alpha)
-
-        # resize
-        w, h = img.size
-        new_size = (int(w * self.zoom), int(h * self.zoom))
-        img = img.resize(new_size, Image.Resampling.LANCZOS)
-
-        self.tk_image = ImageTk.PhotoImage(img)
-
-        self.canvas.delete("all")
-
-        # centre + offset
-        canvas_w = self.canvas.winfo_width()
-        canvas_h = self.canvas.winfo_height()
-
-        x = canvas_w // 2 + self.offset_x
-        y = canvas_h // 2 + self.offset_y
-
-        self.canvas.create_image(x, y, image=self.tk_image)
-
-    # ---------- ZOOM ----------
-    def zoom_mouse(self, event):
-        scale = 1.1 if event.delta > 0 else 0.9
-        self.apply_zoom(scale, event.x, event.y)
-
-    def zoom_in(self, event):
-        self.apply_zoom(1.1, event.x, event.y)
-
-    def zoom_out(self, event):
-        self.apply_zoom(0.9, event.x, event.y)
-
-    def apply_zoom(self, scale, cx, cy):
-        old_zoom = self.zoom
-        self.zoom *= scale
-        self.zoom = max(0.2, min(self.zoom, 5))
-
-        # zoom centré sur la souris
-        self.offset_x = (self.offset_x - cx) * (self.zoom / old_zoom) + cx
-        self.offset_y = (self.offset_y - cy) * (self.zoom / old_zoom) + cy
-
-        self.zoom_var.set(self.zoom)
-        self.update_image()
-
-    def on_zoom_slider(self, _):
-        self.zoom = self.zoom_var.get()
-        self.update_image()
-
-    # ---------- ALPHA ----------
-    def on_alpha_slider(self, _):
-        self.img_alpha = self.alpha_var.get()
-        self.update_image()
-
-    # ---------- DRAG ----------
-    def start_drag(self, event):
-        self.drag_start_x = event.x
-        self.drag_start_y = event.y
-
-    def drag(self, event):
-        dx = event.x - self.drag_start_x
-        dy = event.y - self.drag_start_y
-
-        self.offset_x += dx
-        self.offset_y += dy
-
-        self.drag_start_x = event.x
-        self.drag_start_y = event.y
-
-        self.update_image()
-
-
-# ---------- RUN ----------
 if __name__ == "__main__":
-    root = tk.Tk()
-    app = ZoomableImageViewer(root)
-    root.mainloop()
+    app = QApplication(sys.argv)
+    window = MainWindow()
+    window.show()
+    sys.exit(app.exec())
