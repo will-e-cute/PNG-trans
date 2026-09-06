@@ -38,6 +38,7 @@ Un visualiseur d’images en Python avec :
 
 ```bash
 pip install pillow
+pip instal pyside6
 ```
 
 ***
